@@ -1,0 +1,478 @@
+---
+title: Project 4 
+subtitle: Neural Networks
+output:
+  html_document:
+    code_folding: show
+    df_print: paged
+    number_sections: yes
+    theme: readable
+    toc: yes
+    toc_float: yes
+    code_download: yes
+  word_document:
+    toc: no
+---
+
+```{r setup, include=FALSE,message=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message=FALSE,warning=FALSE)
+knitr::opts_chunk$set(fig.width=6, fig.height=4)
+
+if(require(pacman)==0)
+   {install.packages("pacman")}
+pacman::p_load(devtools,caret,fastDummies,tidyverse,skimr, GGally,DataExplorer,ggrepel,ggthemes,MASS,dslabs,rpart,rpart.plot,
+               randomForest,xgboost,ROCR,recipes,nnet,DiagrammeR,
+               webshot2,doParallel,dplyr)#,keras,tensorflow)
+
+#library(keras3)
+#library(tensorflow)
+
+```
+
+
+
+## Below we load the data. 
+
+The data set we are using cleaned train dataset from project 1. We have 226434 observations and 35 variables in our df_train dataframe. The model we are using for finding the best performance is Neural Networks.
+
+```{r}
+df_train <- readRDS("group5AA_Black-Boopathy_train_11_27.rds")
+df_holdout<-readRDS("holdout_df.rds")
+```
+
+
+### releveling
+
+```{r}
+df_train$loan_default<-relevel(df_train$loan_default, ref= "Yes")
+levels(df_train$loan_default)
+df_holdout$loan_default<-relevel(df_holdout$loan_default, ref="Yes")
+levels(df_holdout$loan_default)
+```
+
+### pre processing recipe
+
+```{r}
+rec <- recipe(loan_default ~ ., data = df_train) %>%
+  step_range(all_numeric_predictors(), min = 0, max = 1)
+prep_loan <- prep(rec)
+
+loan_prepped_train <- bake(prep_loan, new_data = df_train)
+loan_prepped_holdout <- bake(prep_loan, new_data = df_holdout)
+
+set.seed(123)
+loan_prepped_train$loan_default <- as.factor(loan_prepped_train$loan_default)
+
+loan_prepped_train.us=downSample(x=loan_prepped_train %>% dplyr::select(-loan_default),
+                      y=loan_prepped_train$loan_default,
+                      yname="loan_default"
+)
+
+table(loan_prepped_train.us$loan_default)
+
+table(loan_prepped_train$loan_default)
+
+```
+Here, majority class is "No" with 182927 observations.For making a balanced samples we did Downsample majority to match minority and save the details in loan_prepped_train.us dataframe.
+
+
+### 1. run nn on the prepreocess data
+
+```{r}
+tune_grid <- expand.grid(
+  size=c(1,2,3,4,5),
+  decay=seq(0,0.01,by=0.001)
+)
+
+ctrl <- trainControl(
+  method="cv",
+  number=10,
+  classProbs=TRUE,
+  summaryFunction=twoClassSummary
+
+)
+
+set.seed(123)
+
+# Set up Cluster
+cores=detectCores()
+cl=makeCluster(cores-1)
+registerDoParallel(cl)
+
+nn_model_1 <- train(
+  loan_default~.,
+  data=loan_prepped_train.us,
+  method="nnet",
+  trControl=ctrl,
+  tuneGrid=tune_grid,
+  metric="ROC",
+  maxit=500,
+  trace=FALSE
+)
+
+# Stop Cluster
+stopCluster(cl)
+registerDoSEQ()
+
+nnet_model = readRDS("nn_log_model.rds")
+
+```
+
+### 1. Evaluate nn model on the prepreocess data without releveling and baking
+
+```{r}
+
+predmodels <- loan_prepped_holdout %>% dplyr::select(loan_default)
+predmodels$nnet_pred <- predict(nnet_model, loan_prepped_holdout, type = "raw")
+predmodels$nnet_class <- factor(ifelse(predkeras.test$nnet_pred > 0.5,
+                                      "Yes","No"),
+                               levels=c("Yes","No"))
+
+
+predictions=predict(nn_model_1,newdata=log_test,type="raw")
+confusionMatrix(predictions,log_test$loan_default,positive="Yes")
+
+```
+
+
+
+
+
+
+### load logit model to select top predictors
+
+```{r}
+logit_fit=readRDS("logit_model.rds")
+
+# Get the variable names
+coefs_matrix=coef(logit_fit$finalModel,s=logit_fit$bestTune$lambda)
+coefs=as.vector(coefs_matrix)
+nonzero_idx=which(coefs > -0.1 & coefs <0.1)
+logit_names=rownames(coefs_matrix)[nonzero_idx]
+logit_names=logit_names[logit_names != "(Intercept)"]
+
+options(scipen=999)
+print(round(coef(logit_fit$finalModel,logit_fit$bestTune$lambda),4))
+
+
+log_train=loan_prepped_train.us[,c(logit_names,"loan_default")]
+
+log_test=loan_prepped_holdout[,c(logit_names,"loan_default")]
+
+```
+```{r}
+table(log_train$loan_default)
+```
+
+
+### Fit a neural network
+
+## Fit the model.
+
+ We Use the `nnet` method in `train()` to fit a single layer feed forward neural network using 10-fold cross validation. We Create a `tunegrid` to cross validate over the number of nodes in the hidden layer and the weight-decay. - We’re telling R to consider hidden layer sizes of 1, 2, 3, 4, and 5 neurons.The parameter is L2 regularization parameter. Decay  generates values from 0 to 0.01 in steps of 0.001(11 values). Now we have 55 rows in tune grid. We use parallel processing and caret model type (neural net from nnet package).we optimize on AUC(ROC).We suppress the output from training to printing using Trace=FALSE.
+
+
+
+```{r}
+# tune_grid <- expand.grid(
+#   size=c(1,2,3,4,5),
+#   decay=seq(0,0.01,by=0.001)
+# )
+# 
+# ctrl <- trainControl(
+#   method="cv",
+#   number=10,
+#   classProbs=TRUE,
+#   summaryFunction=twoClassSummary
+#   
+# )
+# 
+# set.seed(123)
+# 
+# # Set up Cluster
+# cores=detectCores()
+# cl=makeCluster(cores-1)
+# registerDoParallel(cl)
+# 
+# nn_model <- train(
+#   loan_default~.,
+#   data=log_train,
+#   method="nnet",
+#   trControl=ctrl,
+#   tuneGrid=tune_grid,
+#   metric="ROC",
+#   maxit=500,
+#   trace=FALSE
+# )
+# 
+# # Stop Cluster
+# stopCluster(cl)
+# registerDoSEQ()
+```
+
+## Print the best model hyperparameters and AUC.
+
+```{r}
+#saveRDS(nn_model, file = "nn_log_model.rds")
+nn_model=readRDS("nn_log_model.rds")
+
+```
+
+
+
+
+```{r}
+nn_model$results %>% 
+  dplyr::filter(size == nn_model$bestTune$size,
+                decay == nn_model$bestTune$decay)
+```
+```{r}
+
+```
+
+## Print the variable importance.
+
+```{r}
+varImp(nn_model)
+```
+
+
+
+
+# Evaluate Performance
+
+## Make prediction data frame
+
+Make a data frame that contains the target variable from the holdout sample as well as the probability predictions from your best neural network model.
+
+```{r}
+predictions=predict(nn_model,newdata=log_test,type="raw")
+head(predictions)
+
+confusionMatrix(predictions,log_test$loan_default,positive="Yes")
+## Confusion Matrix and Statistics
+```
+
+# Evaluate Performance
+
+## Use the ROCR package to plot an ROC curve for the model.
+
+```{r}
+probabilities=predict(nn_model,newdata=log_test,type="prob")
+probabilities$actual=log_test$loan_default
+# Create Prediction Object 
+pred = prediction(probabilities[,"Yes"], log_test$loan_default)
+# Create Performance Object
+perf = performance(pred, "tpr", "fpr")
+auc = performance(pred,"auc")
+auc_value=auc@y.values[[1]]
+# Plot the ROC curve
+plot(perf, col = "blue", lwd = 2, main = "ROC Curve")
+abline(a=0, b=1, col="red", lty=2)
+legend("bottomright",legend=paste("AUC = ",round(auc_value,3)),col="blue",lwd=2)
+
+```
+
+```{r}
+tune_grid <- expand.grid(
+  size=c(1,2,3,4,5),
+  decay=seq(0,0.01,by=0.001)
+)
+
+ctrl <- trainControl(
+  method="cv",
+  number=10,
+  classProbs=TRUE,
+  summaryFunction=twoClassSummary
+
+)
+
+set.seed(123)
+
+# Set up Cluster
+cores=detectCores()
+cl=makeCluster(cores-1)
+registerDoParallel(cl)
+
+nn_model <- train(
+  loan_default~.,
+  data=loan_prepped_train.us,
+  method="nnet",
+  trControl=ctrl,
+  tuneGrid=tune_grid,
+  metric="ROC",
+  maxit=500,
+  trace=FALSE
+)
+
+# Stop Cluster
+stopCluster(cl)
+registerDoSEQ()
+```
+
+
+
+```{r}
+saveRDS(nn_model, file = "nn_us_model.rds")
+
+```
+
+```{r}
+nn_model$results %>% 
+  dplyr::filter(size == nn_model$bestTune$size,
+                decay == nn_model$bestTune$decay)
+```
+
+
+```{r}
+varImp(nn_model)
+```
+
+```{r}
+predictions=predict(nn_model,newdata=loan_prepped_holdout,type="raw")
+head(predictions)
+
+confusionMatrix(predictions,loan_prepped_holdout$loan_default,positive="Yes")
+
+```
+
+```{r}
+probabilities=predict(nn_model,newdata=loan_prepped_holdout,type="prob")
+probabilities$actual=loan_prepped_holdout$loan_default
+# Create Prediction Object 
+pred = prediction(probabilities[,"Yes"], loan_prepped_holdout$loan_default)
+# Create Performance Object
+perf = performance(pred, "tpr", "fpr")
+auc = performance(pred,"auc")
+auc_value=auc@y.values[[1]]
+# Plot the ROC curve
+plot(perf, col = "blue", lwd = 2, main = "ROC Curve")
+abline(a=0, b=1, col="red", lty=2)
+legend("bottomright",legend=paste("AUC = ",round(auc_value,3)),col="blue",lwd=2)
+
+```
+
+```{r}
+saveRDS(nn_model, file = "xgb_model.rds")
+
+```
+```{r}
+nn_model$results %>% 
+  dplyr::filter(size == nn_model$bestTune$size,
+                decay == nn_model$bestTune$decay)
+```
+
+```{r}
+#importance <- varImp(nn_model, scale = TRUE)
+
+```
+```{r}
+importance_df <- importance$importance
+importance_df$Variable <- rownames(importance_df)
+rownames(importance_df) <- NULL
+importance_df <- importance_df[, c("Variable", "Overall")]
+importance_df <- importance_df[order(-importance_df$Overall), ]
+
+print(importance_df)
+
+```
+```{r}
+# ============================================================
+# Keras3 + nnet Binary Classification Workflow
+# ============================================================
+
+# Load libraries
+library(keras3)
+library(tensorflow)
+library(nnet)
+library(pROC)
+
+# ------------------------------------------------------------
+# 1. Data Preparation
+# ------------------------------------------------------------
+
+# Convert predictors to numeric matrices (exclude target column)
+x_train <- data.matrix(loan_prepped_train.us[, setdiff(names(loan_prepped_train.us), "loan_default")])
+x_test  <- data.matrix(loan_prepped_holdout[, setdiff(names(loan_prepped_holdout), "loan_default")])
+
+# Convert target to numeric 0/1
+y_train <- as.numeric(loan_prepped_train.us$loan_default)
+y_test  <- as.numeric(loan_prepped_holdout$loan_default)
+
+# ------------------------------------------------------------
+# 2. Keras Model
+# ------------------------------------------------------------
+
+nn_model <- keras_model_sequential() |>
+  layer_dense(units = 64, activation = "relu", input_shape = ncol(x_train)) |>
+  layer_dropout(rate = 0.3) |>
+  layer_dense(units = 32, activation = "relu") |>
+  layer_dropout(rate = 0.2) |>
+  layer_dense(units = 1, activation = "sigmoid")
+
+nn_model |> compile(
+  optimizer = "adam",
+  loss = "binary_crossentropy",
+  metrics = list(metric_auc(), "accuracy")
+)
+
+history <- nn_model |> fit(
+  x_train, y_train,
+  epochs = 20,
+  batch_size = 32,
+  validation_split = 0.2
+)
+
+keras_results <- nn_model |> evaluate(x_test, y_test)
+print(keras_results)
+
+# ------------------------------------------------------------
+# 3. nnet Model
+# ------------------------------------------------------------
+
+# nnet requires a data frame with target as factor/numeric
+loan_prepped_train.us_nnet <- loan_prepped_train.us
+loan_prepped_train.us_nnet$loan_default <- as.factor(loan_prepped_train.us_nnet$loan_default)
+
+nnet_model <- nnet(
+  loan_default ~ ., 
+  data = loan_prepped_train.us_nnet,
+  size = 10,       # hidden units
+  maxit = 200,     # iterations
+  decay = 0.01     # weight decay
+)
+
+# Predictions
+predkeras.test <- loan_prepped_holdout %>% dplyr::select(loan_default)
+predkeras.test$nnet_pred <- predict(nnet_model, loan_prepped_holdout, type = "raw")
+predkeras.test$nnet_class <- factor(ifelse(predkeras.test$nnet_pred > 0.5,
+                                      "Yes","No"),
+                               levels=c("Yes","No"))
+
+
+confusionMatrix(predkeras.test$nnet_class, predkeras.test$loan_default,positive="Yes")
+
+
+# ------------------------------------------------------------
+# 4. Compare Models
+# ------------------------------------------------------------
+
+# Keras ROC
+nn_pred <- nn_model |> predict(x_test)
+roc_nn <- roc(y_test, nn_pred)
+auc_nn <- auc(roc_nn)
+
+# nnet ROC
+roc_nnet <- roc(y_test, nnet_pred)
+auc_nnet <- auc(roc_nnet)
+
+print(paste("Keras AUC:", round(auc_nn, 3)))
+print(paste("nnet AUC:", round(auc_nnet, 3)))
+
+# Plot ROC curves
+plot(roc_nn, col = "blue", main = "ROC Comparison: Keras vs nnet")
+lines(roc_nnet, col = "green")
+legend("bottomright", legend = c("Keras NN", "nnet"),
+       col = c("blue", "green"), lty = 1)
+```
+

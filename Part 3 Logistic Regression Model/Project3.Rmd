@@ -1,0 +1,272 @@
+---
+title: "Project 3 Logistic Regression"
+author: "Black_Boopathy"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+
+
+```{r setup, include=FALSE,message=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE, message=FALSE,warning=FALSE)
+knitr::opts_chunk$set(fig.width=8, fig.height=6)
+
+if(require(pacman)==0)
+   {install.packages("pacman")}
+pacman::p_load(devtools,caret,cluster,dplyr,fastDummies,leaps,pacman,tidyverse,skimr,fastDummies,GGally,DataExplorer,ggrepel,ggthemes,dslabs,scatterplot3d,rpart,rpart.plot,randomForest,xgboost,ROCR)
+
+if (!require(mlba)) {
+  library(devtools)
+  install_github("gedeck/mlba/mlba", force=FALSE)
+}
+pacman::p_load(mlba,tidyverse)
+```
+
+# Read in the data
+
+The following dataset will be used to predict `loan_default`. We are using train and holdout sets for the model creation and testing the performance. Train set has 226434 obs.of 35 variables and holdout has 75555 obs. of 36 variables. We will be utilizing different strategies to receive the best ROC, AUC, sensitivity, and specificity possible. The strategy we will be using in this part will be logistic regression. 
+
+```{r}
+df=readRDS("group5AA_Black-Boopathy_train_11_27.rds")
+names(df) <- gsub(" ", "_", names(df))
+names(df) <- gsub("-", "_", names(df))  
+names(df) <- gsub("\\+", "plus", names(df))
+
+saveRDS(df,"group5AA_Black-Boopathy_train_11_27.rds")
+
+holdout=readRDS("holdout_df.rds")
+
+names(holdout) <- gsub(" ", "_", names(holdout))
+names(holdout) <- gsub("-", "_", names(holdout))
+names(holdout) <- gsub("\\+", "plus", names(holdout))
+
+saveRDS(df,"holdout_df.rds")
+
+levels(df$loan_default)
+```
+# Setting the Reference level
+
+we are using relevel() for making the baseline as "Yes" and ensure by levels().
+
+```{r}
+df$loan_default<-relevel(df$loan_default, ref= "Yes")
+levels(df$loan_default)
+```
+
+
+## Downsample majority to match minority
+
+Here, majority class is "No" with 182927 observations.For making a balanced samples we did Downsample majority to match minority and save the details in df.us dataframe.
+
+```{r}
+# Downsample majority to match minority
+
+set.seed(123)
+df$loan_default <- as.factor(df$loan_default)
+
+df.us=downSample(x=df %>% dplyr::select(-loan_default),
+                      y=df$loan_default,
+                      yname="loan_default"
+ 
+  
+  )
+```
+
+# Check the balanced Dataset
+Now our dataset has balanced and ready for model fitting.
+
+```{r}
+table(df$loan_default)
+table(df.us$loan_default)
+
+```
+# Fit a Logistic Regression Model Using ElasticNet selection with caret
+
+## Set up a trainControl object
+
+method = “cv”, number = 10, We are using 10-fold cross validation. We will use this to select the lasso parameter, λ.
+
+```{r}
+ctrl <- trainControl(method = "cv", number = 10, 
+                     summaryFunction = twoClassSummary,
+                     classProbs = TRUE, 
+                     savePredictions = 'final')
+
+```
+
+# TuneGrid for setting alpha and lambda
+
+Our tuneGrid has two variables. One is alpha sequence starts with 0.1 and ends with 1 having increment as 0.2. lambda has sequence starts with 0.001 and ends with 0.1 and it has 10 equally spaced values. we are using the elastic Net approach.
+
+```{r}
+tuneGrid <- expand.grid(
+  alpha = seq(0.1, 1, by = 0.2),         # Elastic Net mixing
+  lambda = seq(0.001, 0.1, length = 10)    # Regularization strength
+)
+```
+
+## Fit the Model
+
+```{r}
+logit_fit <- train(
+   loan_default~ ., 
+  data = df.us,
+  method = "glmnet",
+  trControl = ctrl,
+  tuneGrid =tuneGrid,
+  metric = "ROC",
+  family = "binomial"
+)
+```
+## Below we look at the optimal value of lambda and explore the model
+
+
+```{r}
+plot(logit_fit)
+```
+```{r}
+logit_fit$bestTune
+```
+
+# Analysis
+
+ The above results shows that, the best tune for alpha= 0.1 and lambda= 0.001.
+ 
+```{r}
+logit_fit$results
+```
+
+Analysis:
+
+The component logit_fit$results gives us a data frame of performance metrics for each combination of tuning parameters.
+In this case, lambda was selected using the AUC value because we set the metric to ROC. The best lambda value was 0.001.
+
+#  coefficients of the model
+
+```{r}
+coef(logit_fit$finalModel,logit_fit$bestTune$lambda)
+```
+ 
+ 
+# Predict on the Test Set
+
+Below we will create a dataframe that includes the predictions on the test data along with the actual values.
+```{r}
+pred.test <- holdout %>% dplyr::select(loan_default)
+pred.test$netprob <- predict(logit_fit, 
+                           newdata = holdout, 
+                           type = "prob")[,"Yes"]
+
+pred.test$netclass<- predict(logit_fit, 
+                                 newdata = holdout,
+                                 type="raw")
+
+```
+
+# Evaluating the performance with confusion matrix
+
+```{r}
+table(pred.test$loan_default)
+table(pred.test$netclass)
+confusionMatrix(pred.test$netclass, pred.test$loan_default,positive="Yes")
+```
+# Analysis:
+
+The sensitivity level is 65% Specificity has 67% and  Balanced Accuracy has 66%. the model stability is reasonably good in finding the true positives.
+
+# ROC Curve
+
+Now we access the Visualize trade-offs between sensitivity and specificity across all thresholds.
+ 
+```{r}
+pred <- prediction(pred.test$netprob, pred.test$loan_default)
+perf <- performance(pred, "tpr", "fpr")
+# Plot Curve
+plot(perf, col = "blue", lwd = 2, main = "ROC Curve for Model 1")
+abline(a = 0, b = 1, col = "red", lty = 2, lwd = 2)
+auc <- performance(pred, "auc")@y.values[[1]]
+print(paste("The AUC is ",round(auc,2)))
+```
+
+## Step 1- Finding the Optimal Threshold using ROCR package
+
+Generally we use the F1 Score to find the optimal threshold.
+Using the ROCR package, we can compute the precision and recall for each threshold
+We use this vector of values to compute the F1 Score for each threshold.
+The threshold that gives the highest F1 Score is the optimal threshold.
+```{r}
+
+pred <- ROCR::prediction(pred.test$netprob,holdout$loan_default)
+prec <- ROCR::performance(pred, "prec")
+rec <- ROCR::performance(pred, "rec")
+precision <- prec@y.values[[1]]
+recall <- rec@y.values[[1]]
+f1=2*precision*recall/(precision+recall)
+f1[is.nan(f1)]=0
+cutoffs=prec@x.values[[1]]
+df_f1=data.frame(f1,cutoffs)
+
+opt_idx <- which.max(f1)
+opt_f1 <- df_f1[opt_idx,]
+opt_f1
+```
+## Analysis
+
+Our best possible cutoff of f1 is 0.5187898
+
+## Step-2 Finding the model performance Using Youden's J statistic
+```{r}
+pred <- ROCR::prediction(pred.test$netprob,holdout$loan_default)
+perf=performance(pred,"tpr","fpr")
+tpr=perf@y.values[[1]]
+fpr=perf@x.values[[1]]
+thr=perf@alpha.values[[1]]
+j=tpr-fpr
+best_j=thr[which.max(j)]
+print(best_j)
+```
+
+##  Analysis
+
+Our best possible cutoff for Youden's J statistic is 0.4683588
+
+
+## Evaluating the performance with the F1 threshold value
+```{r}
+pred.test$netclass_51 <- factor(ifelse(pred.test$netprob > 0.5187898,
+                                      "Yes","No"),
+                               levels=c("Yes","No"))
+
+table(pred.test$loan_default)
+table(pred.test$netclass_51)
+confusionMatrix(pred.test$netclass_51, pred.test$loan_default,positive="Yes")
+
+```
+
+## Evaluating the performance with the Youden threshold value
+```{r}
+pred.test$netclass_46 <- factor(ifelse(pred.test$netprob > 0.4683588,
+                                      "Yes","No"),
+                               levels=c("Yes","No"))
+
+table(pred.test$loan_default)
+table(pred.test$netclass_46)
+confusionMatrix(pred.test$netclass_46, pred.test$loan_default,positive="Yes")
+```
+## Comparision of Two optimal cutoff for selecting the best performance model based on the confusion matrix
+
+We are in the stage of finding the best possible optimal cutoffs impact on  tp,fn values.We checked with the two optimal cutoffs of 0.5187898  and 0.4683588 so we made decision with the level  of 0.4683588 as possible threshold.
+So Youden threshold gives the best accuracy of finding the loan_default with its best in capturing the tp(Actual Defaulters) and minimizing fn (false negatives). Since our goal is to reduce missed defaulters, the Youden threshold achieves the best recall at an acceptable false-positive rate. 
+Hence, using the selected youden's threshold in logistic regression model, we achieve the better predictions in loan_default.
+
+```{r}
+saveRDS(logit_fit,"logit_model.rds")
+saveRDS(pred.test,"pred_test.rds")
+saveRDS(df.us,"df_us.rds")
+
+
+
+coef(logit_fit$finalModel,logit_fit$bestTune$lambda)
+```
+

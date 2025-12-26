@@ -1,0 +1,229 @@
+---
+title: "Project2"
+author: "Black_Thenmozhi Boopathy"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+
+```{r setup, include=FALSE,message=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message=FALSE,warning=FALSE)
+knitr::opts_chunk$set(fig.width=8, fig.height=6)
+
+if(require(pacman)==0)
+   {install.packages("pacman")}
+pacman::p_load(devtools,caret,cluster,dplyr,fastDummies,leaps,pacman,tidyverse,skimr,fastDummies,GGally,DataExplorer,ggrepel,ggthemes)
+
+if (!require(mlba)) {
+  library(devtools)
+  install_github("gedeck/mlba/mlba", force=FALSE)
+}
+pacman::p_load(mlba,tidyverse)
+```
+
+
+```{r}
+
+df = read.csv("holdout.csv", stringsAsFactors = TRUE)
+str(df)
+
+```
+#Summary Statistics for numeric Variables 
+
+```{r}
+#Split data into categorical and numeric datasets 
+bank_numeric <- select_if(df, is.numeric)
+bank_factor <- select_if(df, is.factor)
+#Ensure dataframes correctly split
+head(bank_numeric)
+head(bank_factor)
+```
+```{r}
+#Summary Statistics for numeric Variables 
+summary(bank_numeric)
+```
+
+```{r}
+plot_missing(df)
+```
+
+```{r}
+# Look at structure and ensure these are all factor variables
+str(bank_factor)
+
+```
+
+```{r}
+# Histograms for numeric variables
+
+DataExplorer::plot_histogram(bank_numeric,
+                             ggtheme=theme_minimal(),
+                             ncol=3,
+                             nrow=3)
+
+```
+```{r}
+# Boxplots based off the loan defaulting or not 
+#bank_numeric$loan_default <- df$loan_default
+#DataExplorer::plot_boxplot(bank_numeric, by="loan_default",
+                           #ggtheme = theme_minimal(),
+                          #ncol=3,
+                          #nrow=3)
+```
+
+```{r}
+# Create a heat map to check correlation between variables
+DataExplorer::plot_correlation(bank_numeric,
+                               type="continuous",
+                               cor_args = list("use" = "pairwise.complete.obs")
+                               )
+
+```
+```{r}
+# Remove these variables
+df<-df%>%
+  select(-installment, -acc_now_delinq, -mths_since_last_delinq, -delinq_2yrs)
+dim(df)
+```
+
+```{r}
+DataExplorer::plot_bar(bank_factor,
+                       ggtheme = theme_minimal(),
+                       ncol=4,
+                       nrow=5)
+                       
+```
+```{r}
+# Remove variables that are not seen as needed
+df<-df%>%
+  select(-emp_title, -issue_d, -title, -application_type, -hardship_flag, -earliest_cr_line, -last_credit_pull_d, -address, -sub_grade)
+dim(df)
+```
+
+
+```{r}
+#Checking missing Values
+colSums(is.na(df))
+```
+
+```{r}
+#DEC
+df$fico_score <- (df$fico_range_low + df$fico_range_high) / 2
+df <- df %>% select(-fico_range_low, -fico_range_high)
+
+#cap <- quantile(df$annual_inc, 0.99)
+#df$annual_inc[df$annual_inc > cap] <- cap
+
+
+# Median imputation on the mort_acc variable
+
+df$mort_acc[is.na(df$mort_acc)] <- 1
+#df$mort_acc[is.na(df$mort_acc)] <- median(df$mort_acc, na.rm = TRUE)
+sum(is.na(df$mort_acc))
+```
+```{r}
+#Median imputation to the pub_rec_bankrupcies variable
+df$pub_rec_bankruptcies[is.na(df$pub_rec_bankruptcies)] <- 0
+sum(is.na(df$pub_rec_bankruptcies))
+```
+
+```{r}
+# Removing rows where revol_util is NA 
+#df <- df[!is.na(df$revol_util), ]
+df$revol_util[is.na(df$revol_util)] <- median(df$revol_util, na.rm = TRUE)
+#nrow(df)
+```
+```{r}
+# Capping the revol_util variable
+Q1 <- quantile(df$revol_util, 0.25, na.rm = TRUE)
+Q3 <- quantile(df$revol_util, 0.75, na.rm = TRUE)
+IQR <- Q3 - Q1
+upper_bound <- Q3 + 1.5 * IQR
+df$revol_util[df$revol_util > upper_bound] <- upper_bound
+summary(df$revol_util)
+boxplot(df$revol_util, main = "Revolving Utilization", horizontal = TRUE)
+```
+```{r}
+# Capping the dti outlier
+Q1 <- quantile(df$dti, 0.25, na.rm = TRUE)
+Q3 <- quantile(df$dti, 0.75, na.rm = TRUE)
+IQR <- Q3 - Q1
+
+upper_bound <- Q3 + 1.5 * IQR
+df$dti[df$dti > upper_bound] <- upper_bound
+boxplot(df$dti, main = "DTI", horizontal = TRUE)
+```
+```{r}
+#Removing the "other" and "none" values 
+#df <- df[!df$home_ownership %in% c("OTHER", "NONE"), ]
+df$home_ownership[df$home_ownership %in% c("OTHER","NONE")] <- "RENT"
+df$home_ownership <- droplevels(df$home_ownership)
+table(df$home_ownership)
+```
+```{r}
+#Reduce dimensions in the purpose variable
+df$purpose <- fct_other(df$purpose, keep = c("debt_consolidation", "credit_card", "home_improvement"), other_level = "other")
+table(df$purpose)
+```
+
+```{r}
+df1=df
+# Reducing dimensions on emp_length
+df <- df %>%
+  mutate(emp_length = case_when(
+    emp_length %in% c("< 1 year", "1 year", "2 years", "3 years") ~ "0-3 years",
+    emp_length %in% c("4 years", "5 years", "6 years") ~ "4-6 years",
+    emp_length %in% c("7 years", "8 years", "9 years") ~ "7-9 years",
+    emp_length == "10+ years" ~ "10+ years",
+    TRUE ~ "Unknown"
+  ))
+df$emp_length <- factor(df$emp_length,
+                                levels = c("0-3 years", "4-6 years", "7-9 years", "10+ years","Unknown"),
+                                ordered = TRUE)
+#df <- df %>%
+#  filter(!is.na(emp_length) & emp_length != "Unknown")
+
+```
+
+```{r}
+# Dummy encoding all remaining categorical variables 
+df <- fastDummies::dummy_cols(df,
+                              select_columns = c(
+                                                 "term",
+                                                 "home_ownership",
+                                                 "verification_status",
+                                                 "grade",
+                                                 "purpose",
+                                                 "initial_list_status",
+                                                 "debt_settlement_flag",
+                                                 "emp_length"),
+                              remove_first_dummy = TRUE,      # avoids dummy variable trap
+                              remove_selected_columns = TRUE) # removes original factor columns
+```
+```{r}
+# dti * int_rate interaction term 
+df$interaction_dti_interest <- df$dti * df$int_rate
+# Show correlation
+hist(df$interaction_dti_interest,
+     main = "Interaction",
+     xlab = "DTI * int_rate",
+     col = "lightblue",
+     border = "white")
+
+```
+```{r}
+summary(df)
+```
+```{r}
+
+#nzv <- caret::nearZeroVar(df)
+#df <- df[, -nzv]
+
+#num_cols <- sapply(df, is.numeric)
+#df[num_cols] <- scale(df[num_cols])
+
+names(df) <- gsub(" ", "_", names(df))
+names(df) <- gsub("-", "_", names(df))  
+names(df) <- gsub("\\+", "plus", names(df))
+saveRDS(df, "dec2_holdout_df.rds")
+```

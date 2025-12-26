@@ -1,0 +1,310 @@
+---
+title: Project 4 
+Author: Black_Boopathy
+subtitle: Neural Networks
+output:
+  html_document:
+    code_folding: show
+    df_print: paged
+    number_sections: yes
+    theme: readable
+    toc: yes
+    toc_float: yes
+    code_download: yes
+  word_document:
+    toc: no
+---
+
+```{r setup, include=FALSE,message=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message=FALSE,warning=FALSE)
+knitr::opts_chunk$set(fig.width=6, fig.height=4)
+
+if(require(pacman)==0)
+   {install.packages("pacman")}
+pacman::p_load(devtools,caret,fastDummies,tidyverse,skimr, GGally,DataExplorer,ggrepel,ggthemes,MASS,dslabs,rpart,rpart.plot,
+               randomForest,xgboost,ROCR,recipes,nnet,DiagrammeR,
+               webshot2,doParallel,dplyr)#,keras3,tensorflow)
+
+#library(keras3)
+#library(tensorflow)
+
+```
+
+
+
+# Processing the data
+
+## below we load the data
+
+The data set we are using cleaned train dataset from project 1. We have 226434 observations and 35 variables in our df_train dataframe. The model we are using for finding the best performance is Neural Networks.
+
+```{r}
+df_train <- readRDS("dec_train_df.rds")
+df_holdout<-readRDS("dec_holdout_df.rds")
+```
+
+
+## Releveling the data
+
+We insisted the reference variable here is "Yes". For that, we use  relevel function.To confirm our levels priority we use levels()function. 
+
+```{r}
+df_train$loan_default<-relevel(df_train$loan_default, ref= "Yes")
+levels(df_train$loan_default)
+df_holdout$loan_default<-relevel(df_holdout$loan_default, ref="Yes")
+levels(df_holdout$loan_default)
+```
+
+## pre processing recipe
+
+Here, majority class is "No" with 182927 observations.For making a balanced samples we did Down sample majority to match minority and save the details in loan_prepped_train.us data frame and now my loan default in loan_prepped_train.us has balanced samples.
+
+```{r}
+rec <- recipe(loan_default ~ ., data = df_train) %>%
+  step_range(all_numeric_predictors(), min = 0, max = 1)
+prep_loan <- prep(rec)
+
+loan_prepped_train <- bake(prep_loan, new_data = df_train)
+loan_prepped_holdout <- bake(prep_loan, new_data = df_holdout)
+
+set.seed(123)
+loan_prepped_train$loan_default <- as.factor(loan_prepped_train$loan_default)
+
+loan_prepped_train.us=downSample(x=loan_prepped_train %>% dplyr::select(-loan_default),
+                      y=loan_prepped_train$loan_default,
+                      yname="loan_default"
+)
+
+table(loan_prepped_train.us$loan_default)
+
+table(loan_prepped_train$loan_default)
+
+```
+# Basic nn Model
+
+## Run nn_model on the preprocessed Data
+
+We Use the `nnet` method in `train()` to fit a single layer feed forward neural network using 10-fold cross validation. We Create a `tunegrid` to cross validate over the number of nodes in the hidden layer and the weight-decay. - We’re telling R to consider hidden layer sizes of 1, 2, 3, 4, and 5 neurons.The parameter is L2 regularization parameter. Decay  generates values from 0 to 0.01 in steps of 0.001(11 values). Now we have 55 rows in tune grid. We use parallel processing and caret model type (neural net from nnet package).we optimize on AUC(ROC).We suppress the output from training to printing using Trace=FALSE.
+
+```{r}
+# tune_grid <- expand.grid(
+#   size=c(1,2,3,4,5),
+#   decay=seq(0,0.01,by=0.001)
+# )
+# 
+# ctrl <- trainControl(
+#   method="cv",
+#   number=10,
+#   classProbs=TRUE,
+#   summaryFunction=twoClassSummary
+# 
+# )
+# 
+# set.seed(123)
+# 
+# # Set up Cluster
+# cores=detectCores()
+# cl=makeCluster(cores-1)
+# registerDoParallel(cl)
+# 
+# nn_model_1 <- train(
+#   loan_default~.,
+#   data=loan_prepped_train.us,
+#   method="nnet",
+#   trControl=ctrl,
+#   tuneGrid=tune_grid,
+#   metric="ROC",
+#   maxit=500,
+#   trace=FALSE
+# )
+# 
+# # Stop Cluster
+# stopCluster(cl)
+# registerDoSEQ()
+# saveRDS(nn_model_1,"dec_nn_us_model.rds")
+nnet_model = readRDS("dec_nn_us_model.rds")
+
+```
+
+We save the model and load it again to aviod rerunning multiple times.
+
+## Predict and Evaluate nn model 
+
+Now we are in the stage of prediction to evaluate the model performance with holdout data. For that, we use predict() function with nnet_model and loan_prepped_holdout to compute nnet_pred.prob and nnet_pred.class. We done our confusion matrix for analysing the tp,fn values will have resaonable predictions and checking the overall accuracy.
+
+In continuation with this, we are creating the plot AUC metric. our AUC is 0.74 that's resonably better in catching tp against fp.
+
+```{r}
+
+predmodels <- loan_prepped_holdout %>% dplyr::select(loan_default)
+predmodels$nnet_pred.prob <- predict(nnet_model,newdata = loan_prepped_holdout,type="prob")[,"Yes"]
+predmodels$nnet_pred.class <- predict(nnet_model, newdata = loan_prepped_holdout, type = "raw")
+
+confusionMatrix(predmodels$nnet_pred.class,predmodels$loan_default,positive="Yes")
+
+probabilities=predict(nnet_model,newdata=loan_prepped_holdout,type="prob")
+probabilities$actual=loan_prepped_holdout$loan_default
+# Create Prediction Object 
+pred = prediction(probabilities[,"Yes"], loan_prepped_holdout$loan_default)
+# Create Performance Object
+perf = performance(pred, "tpr", "fpr")
+auc = performance(pred,"auc")
+auc_value=auc@y.values[[1]]
+# Plot the ROC curve
+plot(perf, col = "blue", lwd = 2, main = "ROC Curve")
+abline(a=0, b=1, col="red", lty=2)
+legend("bottomright",legend=paste("AUC = ",round(auc_value,3)),col="blue",lwd=2)
+
+
+
+```
+
+# NN Model with Keras
+
+## Fitting the NN Model with Keras
+We are now introducing the new package in nnmodel as Keras3 for using two hidden layers and  checking the performance(AUC). For this we installed python environment in R also installed tensorflow and pROC.Activation Function Introduces non-linearity. We use ReLU method. Common Loss Function for Classification - Cross-Entropy (for binary classification). keras_model_sequential() is the constructor that creates a new sequential model object in keras. We need an nn_model object to attach layers in it.Input layer has number of features in x_train and 32, 64 neurons in the layer and output function has 1 neuron with activation function has sigmoid. 
+
+Now, the compilation part has weight updates Adam in training and crossentrophy for binary classification.
+final part is fit in the steps of - trains the model on  training data.
+epochs = 20 → the model sees the entire training set 20 times.
+batch_size = 32 → updates weights after every 32 samples.
+validation_split = 0.2 → reserves 20% of training data for validation during training.
+history stores the training log (loss, accuracy, AUC per epoch).
+evaluate() runs the trained model on  test set (data not seen during training).
+It returns the loss and all metrics.
+we make a data frame that contains the target variable from the holdout sample as well as the probability predictions from my best neural network model and confusion matrix.
+
+
+```{r}
+# Load libraries
+library(keras3)
+library(tensorflow)
+library(nnet)
+library(pROC)
+
+x_train <- data.matrix(loan_prepped_train.us[, setdiff(names(loan_prepped_train.us), "loan_default")])
+x_test  <- data.matrix(loan_prepped_holdout[, setdiff(names(loan_prepped_holdout), "loan_default")])
+
+y_train <- ifelse(loan_prepped_train.us$loan_default == "Yes", 1, 0)
+y_test  <- ifelse(loan_prepped_holdout$loan_default == "Yes", 1, 0)
+
+nn_model <- keras_model_sequential() |>
+  layer_dense(units = 64, activation = "relu", input_shape = ncol(x_train)) |>
+  layer_dropout(rate = 0.3) |>
+  layer_dense(units = 32, activation = "relu") |>
+  layer_dropout(rate = 0.2) |>
+  layer_dense(units = 1, activation = "sigmoid")
+
+nn_model |> compile(
+  optimizer = "adam",
+  loss = "binary_crossentropy", # compares probabilities against true binary labels
+  metrics = list(metric_auc(), "accuracy")
+)
+
+history <- nn_model |> fit(
+  x_train, y_train,
+  epochs = 20,# control the model trains
+  batch_size = 32,# control the optimizer updates weights
+  validation_split = 0.2 # Feedback during training
+)
+
+keras_results <- nn_model |> evaluate(x_test, y_test)
+#print(keras_results)
+
+```
+
+## Model Prediction and Evaluation
+
+```{r}
+
+# Keras ROC
+nn_pred <- nn_model |> predict(x_test)
+roc_nn <- roc(y_test, nn_pred)
+auc_nn <- auc(roc_nn)
+
+print(paste("Keras AUC:", round(auc_nn, 3)))
+
+# Predictions
+predmodels$nnet_keras.prob <- nn_pred
+predmodels$nnet_keras.class <- factor(ifelse(predmodels$nnet_keras.prob > 0.5,
+                                      "Yes","No"),
+                               levels=c("Yes","No"))
+
+confusionMatrix(predmodels$nnet_keras.class,predmodels$loan_default,positive="Yes")
+
+
+# Plot ROC curves
+plot(roc_nn, col = "blue", lwd = 2, main = "ROC Curve", legacy.axes = TRUE)
+legend("bottomright", legend = paste("AUC =", round(auc_nn, 3)), col = "blue", lwd = 2)
+
+
+
+```
+
+# AUC Metric Comparision for the Models
+ 
+This code evaluates and compares the performance of three models (a neural network, a logistic regression, and a keras neural network) using ROC curves, AUC values and plot all the models performanace for choosing the better one and analysing the "tpr" against "fpr" .By seeing the AUC plot of all the three models the nn model  has reaching the highest AUC of 0.74(74% of capturing "tpr" against "fpr").
+
+```{r}
+#Create prediction object
+pred.nn=prediction(predmodels$nnet_pred.prob, predmodels$loan_default)
+#pred.nn_logistic=prediction(predmodels$nnet_log_pred.prob, predmodels$loan_default)
+pred.nn_keras=prediction(predmodels$nnet_keras.prob, y_test)
+
+# Create performance object
+perf.nn=performance(pred.nn, "tpr", "fpr")
+#perf.nn_logistic=performance(pred.nn_logistic, "tpr", "fpr")
+perf.nn_keras=performance(pred.nn_keras, "tpr", "fpr")
+
+# Create AUC
+auc.nn=performance(pred.nn, "auc")
+#auc.nn_logistic=performance(pred.nn_logistic, "auc")
+auc.nn_keras=performance(pred.nn_keras, "auc")
+
+plot(perf.nn, col="blue", lwd=2, main="ROC Curves")
+#plot(perf.nn_logistic, col="red", lwd=2, add=TRUE)
+plot(perf.nn_keras, col="green", lwd=2, add=TRUE)
+abline(a=0, b=1, col="gray", lty=2)
+legend("bottomright", 
+       legend = c(
+         paste0("NN (AUC=", round(auc.nn@y.values[[1]], 3), ")"),
+         #paste0("NN-Logistic (AUC=", round(auc.nn_logistic@y.values[[1]], 3), ")"),
+         paste0("NN-Keras (AUC=", round(auc.nn_keras@y.values[[1]], 3), ")")
+       ),
+       col = c("blue", "red", "green"), 
+       lwd = 2)
+
+```
+
+# Tuning the Predictions for threshold Using Youden's J statistic
+
+This code identifies the optimal classification threshold for a neural network model using Youden’s J statistic and then evaluates the model’s performance with a confusion matrix:
+
+```{r}
+# Calculate Youden's J
+fpr=perf.nn@x.values[[1]]
+tpr=perf.nn@y.values[[1]]
+cutoffs=perf.nn@alpha.values[[1]]
+j=tpr-fpr
+# Find cutoff
+best_j_idx=which.max(j)
+best_j=j[best_j_idx]
+best_thresh=cutoffs[best_j_idx]
+# Print the best threshold and F1 score
+cat("Best Threshold:", round(best_thresh, 3))
+
+
+# Use best threshold to classify
+predmodels$nn_final = ifelse(predmodels$nnet_pred.prob > best_thresh, "Yes", "No") %>%
+  factor(levels = c("Yes", "No"))
+
+# Confusion matrix
+confusionMatrix(predmodels$nn_final, predmodels$loan_default,positive="Yes")
+```
+# Final Analysis
+
+By comparing all the three models, basic nn_model and nnmodel with keras have AUC 74%. But while considering the context of loan default we have chosen the model based on confusion matrix and accuracy value. The reason for using youdens j statistic is, if we see our confusion matrix of nn_model my tp has 29009 and fn has 14498 and 67.77% accuracy. In the loan default scenario, minimizing fn and increasing tp is the target. so if i am using the youden's J statistic my confusion matrix reveals the best posssible values in finding fn and tp are 15265 and 28242 with 68.92% accuracy. so for achieving the better results i choose this probabilty would be the best in performance. 
+
+Using the youden's J in  basic nn_network model my AUC has 74%.
+
+So we would suggest considering basic nn_model for achieving the goal in loan_default.

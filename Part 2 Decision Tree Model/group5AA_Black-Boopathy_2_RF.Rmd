@@ -1,0 +1,109 @@
+---
+title: group5AA_Black-Boopathy_2_RF
+
+output:
+  html_document:
+    code_folding: show
+    df_print: paged
+    number_sections: yes
+    theme: readable
+    toc: yes
+    toc_float: yes
+    code_download: yes
+  word_document:
+    toc: no
+---
+```{r setup, include=FALSE,message=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message=FALSE,warning=FALSE)
+knitr::opts_chunk$set(fig.width=8, fig.height=6)
+
+if(require(pacman)==0)
+   {install.packages("pacman")}
+pacman::p_load(devtools,caret,fastDummies,tidyverse,skimr,GGally,DataExplorer,ggrepel,ggthemes,dslabs,rpart,rpart.plot,randomForest,xgboost,ROCR,doParallel)
+
+if (!require(mlba)) {
+  library(devtools)
+  install_github("gedeck/mlba/mlba", force=FALSE)
+}
+pacman::p_load(mlba,tidyverse)
+```
+
+# Read in the data
+
+The following dataset will be used to predict `classification`. Your goal in this analysis is to create a model able to accurately detect and flag malware. We have a data set containing 50000/50000 malware and benign files. The data set was balanced by selecting only the malware files and downsampling the benign files. The response variable is called `classification`. 
+
+```{r}
+train=readRDS("group5AA_Black-Boopathy_train.rds")
+holdout=readRDS("holdout_df_Singletree.rds")
+```
+
+
+```{r}
+cores=parallel::detectCores()
+cl <- parallel::makeCluster(cores-1)  # Set CPU cores for parallel execution
+registerDoParallel(cl)  # Register parallel backend
+```
+# Cross-validated Random Forest
+
+## Fit the model
+
+* Use `set.seed(123)`.  Use the `caret` package and 5-fold cross-validation to fit a random forest model to the **training data**.  
+* Create a grid that evaluates for mtry from 1 to 10.  Use a minimum node-size of 50 and ensemble 30 trees (`ntree=30`).  
+* Print the model.
+
+This will take a few minutes to run.  If you want to speed it up, you can use parallel processing with the train function.  
+
+```{r}
+set.seed(123)
+# Set up trainControl
+cv_control <- trainControl(method = "cv", number = 5,allowParallel = TRUE )
+
+# Define a grid of `mtry` values to search over
+mtry_grid <- expand.grid(mtry = seq(1, ncol(train) - 1, by = 1))  
+
+# Train the Random Forest model with cross-validation
+rf_cv <- train(loan_default ~ ., 
+                  data = train,
+                  method = "rf",  # Uses randomForest under the hood
+                  trControl = cv_control,  # Apply 5-fold CV
+                  tuneGrid = mtry_grid,  # Search over `mtry`
+                  ntree = 30,  # Fixed number of trees
+                  importance = TRUE,
+                  nodesize = 50)
+```
+
+## Variable Importance
+
+Print the variable importance plot for the model
+
+```{r}
+rf_cv
+
+
+holdout$rf_cv.class <- predict(rf_cv,
+                                      newdata=holdout,
+                                      type ="raw"
+                                      )
+holdout$rf_cv.prob <- predict(rf_cv,
+                                      newdata=holdout,
+                                      type ="prob"
+                                      )[,"Yes"] #probability of "Yes"
+
+confusionMatrix(holdout$rf_cv.class,
+                holdout$loan_default,positive="Yes"
+                
+    
+            )
+```
+
+
+```{r}
+stopCluster(cl)  # Shut down parallel cluster
+registerDoSEQ()  # Reset to sequential processing
+```
+
+```{r}
+saveRDS(holdout, "1holdout_df_RF.rds")
+```
+
+

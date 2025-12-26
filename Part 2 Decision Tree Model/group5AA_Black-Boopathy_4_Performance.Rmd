@@ -1,0 +1,250 @@
+---
+Title: group5AA_Black-Boopathy_4_Performance
+
+output:
+  html_document:
+    code_folding: show
+    df_print: paged
+    number_sections: yes
+    theme: readable
+    toc: yes
+    toc_float: yes
+    code_download: yes
+  word_document:
+    toc: no
+---
+```{r setup, include=FALSE,message=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message=FALSE,warning=FALSE)
+knitr::opts_chunk$set(fig.width=8, fig.height=6)
+
+if(require(pacman)==0)
+   {install.packages("pacman")}
+pacman::p_load(devtools,caret,fastDummies,tidyverse,skimr,GGally,DataExplorer,ggrepel,ggthemes,dslabs,rpart,rpart.plot,randomForest,xgboost,ROCR,doParallel)
+
+if (!require(mlba)) {
+  library(devtools)
+  install_github("gedeck/mlba/mlba", force=FALSE)
+}
+pacman::p_load(mlba,tidyverse)
+```
+
+# Credit Card Analogy
+
+Goal: Identify customers likely to default on loan.
+Positive (1): Customer predicted to default
+Negative (0): Customer predicted not to default
+
+False Positive (FP): Predicts default, but customer actually pays → Moderate cost (lost interest or customer trust if credit is restricted unnecessarily)
+False Negative (FN): Predicts no default, but customer actually defaults → High cost (financial loss due to unpaid debt)
+
+Strategy:
+Since missing actual defaulters (false negatives) is very costly, we keep the classification threshold higher to be more conservative. This reduces false negatives (missed defaulters), even if it slightly increases false positives (good customers flagged as risky).
+
+Goal:
+
+Reduce false negatives — you don’t want to miss people who will actually default. We should decrease the classification threshold to catch more potential defaulters — even if it means mistakenly flagging some safe customers.
+
+## Load the Dataset
+```{r}
+holdout=readRDS("holdout_df_Boost.rds")
+```
+
+
+## Performance Comparison Table Across All Models with Accuracy,Sensitivity,Specificity,F1 and AUC
+
+
+```{r}
+# Extract true labels
+  truth <- holdout$loan_default
+
+# Get model names based on .prob columns
+  model_names <- names(holdout) %>%
+  stringr::str_subset("\\.prob$") %>%
+  stringr::str_remove("\\.prob$")
+
+    get_metricss <- function(model_name) {
+
+    }
+# Function to compute metrics for each model
+  get_metrics <- function(model_name) {
+  prob_col <- paste0(model_name, ".prob")
+  class_col <- paste0(model_name, ".class")
+
+    # Extract predictions
+  prob <- holdout[[prob_col]]
+  pred <- factor(holdout[[class_col]], levels = c("No", "Yes"))
+
+    # Confusion matrix
+  cm <- caret::confusionMatrix(pred, truth, positive = "Yes")
+
+  # AUC
+  roc_obj <- pROC::roc(truth, prob, quiet = TRUE)
+
+  # Metrics
+  data.frame(
+    Model = model_name,
+    Accuracy = cm$overall["Accuracy"],
+    Sensitivity = cm$byClass["Sensitivity"],
+    Specificity = cm$byClass["Specificity"],
+    F1 = MLmetrics::F1_Score(
+      y_pred = pred,
+      y_true = truth,
+      positive = "Yes"
+    ),
+    AUC = as.numeric(roc_obj$auc)
+  )
+}
+
+# Apply to all models
+results_df <- dplyr::bind_rows(lapply(model_names, get_metrics))
+
+# Remove row names and display
+rownames(results_df) <- NULL
+print(results_df)
+```
+## Analysis:
+
+By seeing the table Xgb has highest AUC value(74%) and next highest is rf_cv(70%).
+
+## ROC Curve for XBoost Tree and Confusion Matrix
+
+```{r}
+pred <- ROCR::prediction(holdout$xgb.prob,holdout$loan_default)
+perf <- ROCR::performance(pred, "tpr", "fpr")
+# Plot Curve
+plot(perf, col = "blue", lwd = 2, main = "ROC Curve for Xboost Tree")
+abline(a = 0, b = 1, col = "red", lty = 2, lwd = 2)
+
+confusionMatrix(holdout$xgb.class,
+                holdout$loan_default,positive="Yes")
+```
+## Analysis:
+
+FP: 12476 and TP:2053 Specificity : 98% Sensitivity : 14% Accuracy : 82% and Balanced Accuracy: 56%
+
+## Step 1- Finding the Optimal Threshold using ROCR package
+
+Generally we use the F1 Score to find the optimal threshold.
+Using the ROCR package, we can compute the precision and recall for each threshold
+We use this vector of values to compute the F1 Score for each threshold.
+The threshold that gives the highest F1 Score is the optimal threshold.
+
+```{r}
+pred <- ROCR::prediction(holdout$xgb.prob,holdout$loan_default)
+prec <- ROCR::performance(pred, "prec")
+rec <- ROCR::performance(pred, "rec")
+precision <- prec@y.values[[1]]
+recall <- rec@y.values[[1]]
+f1=2*precision*recall/(precision+recall)
+f1[is.nan(f1)]=0
+cutoffs=prec@x.values[[1]]
+df_f1=data.frame(f1,cutoffs)
+
+opt_idx <- which.max(f1)
+opt_f1 <- df_f1[opt_idx,]
+opt_f1
+print(opt_f1$cutoffs)
+```
+## Analysis
+
+Our best possible cutoff is 0.2266894.
+
+## Step-2 Finding the model performance Using Youden's J statistic
+
+```{r}
+pred <- ROCR::prediction(holdout$xgb.prob,holdout$loan_default)
+perf=performance(pred,"tpr","fpr")
+tpr=perf@y.values[[1]]
+fpr=perf@x.values[[1]]
+thr=perf@alpha.values[[1]]
+j=tpr-fpr
+best_j=thr[which.max(j)]
+print(best_j)
+
+```
+
+## ## Analysis
+
+Our best possible cutoff is 0.1886004.
+
+## Comparision of Two optimal cutoff for selecting the best performance model based on the confusion matrix
+
+We are curious to know  with the two optimal cutoffs impact on  tp,fn values.We checked with the two optimal cutoffs of 0.18 and 0.23. Both of the thersholds either decreasing amount of tp or increasing fp. so we made the in between level 0.2 as possible thershold.The code given below reveals the best accuracy rate for loan_defaults.
+
+```{r}
+holdout$xgbopt_cutoff.class <- factor(ifelse(holdout$xgb.prob >=  0.2, "Yes", "No"), levels = c("No", "Yes"))
+holdout$xgbopt_cutoff.prob <- holdout$xgb.prob
+
+confusionMatrix(holdout$xgb.class,
+                holdout$loan_default,positive="Yes")
+confusionMatrix(holdout$xgbopt_cutoff.class,
+                holdout$loan_default,positive="Yes")
+```
+
+
+
+```{r}
+# Extract true labels
+  truth <- holdout$loan_default
+
+# Get model names based on .prob columns
+  model_names <- names(holdout) %>%
+  stringr::str_subset("\\.prob$") %>%
+  stringr::str_remove("\\.prob$")
+
+    get_metricss <- function(model_name) {
+
+    }
+# Function to compute metrics for each model
+  get_metrics <- function(model_name) {
+  prob_col <- paste0(model_name, ".prob")
+  class_col <- paste0(model_name, ".class")
+
+    # Extract predictions
+  prob <- holdout[[prob_col]]
+  pred <- factor(holdout[[class_col]], levels = c("No", "Yes"))
+
+    # Confusion matrix
+  cm <- caret::confusionMatrix(pred, truth, positive = "Yes")
+
+  # AUC
+  roc_obj <- pROC::roc(truth, prob, quiet = TRUE)
+
+  # Metrics
+  data.frame(
+    Model = model_name,
+    Accuracy = cm$overall["Accuracy"],
+    Sensitivity = cm$byClass["Sensitivity"],
+    Specificity = cm$byClass["Specificity"],
+    F1 = MLmetrics::F1_Score(
+      y_pred = pred,
+      y_true = truth,
+      positive = "Yes"
+    ),
+    AUC = as.numeric(roc_obj$auc)
+  )
+}
+
+# Apply to all models
+results_df <- dplyr::bind_rows(lapply(model_names, get_metrics))
+
+# Remove row names and display
+rownames(results_df) <- NULL
+print(results_df)
+```
+
+## Result
+
+By reviewing all the table metrics, xgbopt_cutoff has best in capturing the tp(Actual Defaulters),F1(capturing defaulters and avoiding false alarms)
+and AUC(Identify  the difference between defaulting and non-defaulting borrowers )
+
+Recall = 0.64 → catches ~64% of actual defaulters
+
+F1 = 0.44 → strong balance of precision & recall
+
+AUC = 0.74 → reliable ranking capability
+
+Best Model for Loan Defaults: xgbopt_cutoff 
+
+
+

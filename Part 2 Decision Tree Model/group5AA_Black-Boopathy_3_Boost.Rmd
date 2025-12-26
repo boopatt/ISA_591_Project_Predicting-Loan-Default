@@ -1,0 +1,124 @@
+---
+Title: group5AA_Black-Boopathy_3_Boost
+
+output:
+  html_document:
+    code_folding: show
+    df_print: paged
+    number_sections: yes
+    theme: readable
+    toc: yes
+    toc_float: yes
+    code_download: yes
+  word_document:
+    toc: no
+---
+```{r setup, include=FALSE,message=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message=FALSE,warning=FALSE)
+knitr::opts_chunk$set(fig.width=8, fig.height=6)
+
+if(require(pacman)==0)
+   {install.packages("pacman")}
+pacman::p_load(devtools,caret,fastDummies,tidyverse,skimr,GGally,DataExplorer,ggrepel,ggthemes,dslabs,rpart,rpart.plot,randomForest,xgboost,ROCR,doParallel)
+
+if (!require(mlba)) {
+  library(devtools)
+  install_github("gedeck/mlba/mlba", force=FALSE)
+}
+pacman::p_load(mlba,tidyverse)
+```
+
+# Read in the data
+
+The following  data set will be used to predict `loan_default'. Our goal in this analysis is to create a model able to accurately detect loan_default. We have a data set containing 75555 observations in holdout and 22634 observations in train  files.  The response variable is called `classification`. 
+
+```{r}
+train=readRDS("group5AA_Black-Boopathy_train_11_27.rds")
+holdout=readRDS( "holdout_df.rds")
+```
+
+
+
+We have set up for parallel processing
+
+```{r}
+cores=parallel::detectCores()
+cl <- parallel::makeCluster(cores-1)  # Set CPU cores for parallel execution
+registerDoParallel(cl)  # Register parallel backend
+```
+
+Also, we set up 5-fold cross validation
+
+```{r}
+cv_control <- trainControl(
+  method = "cv",
+  number = 5,
+  allowParallel = TRUE  # Enables parallel computation during training
+) 
+```
+
+ Now we are in the process of Training XGBoost model using `tuneLength=5 and set.seed(123) for reproducibility`
+
+```{r}
+set.seed(123)
+xgb_model <- train(
+  loan_default ~ ., 
+  data = train,
+  method = "xgbTree",
+  trControl = cv_control,  # Apply 5-fold cross-validation
+  tuneLength = 5  # caret picks up to 5 values for each of 7 parms and fits all combos up to 5^7
+)
+```
+
+# Stop Paralell Processing
+
+```{r}
+stopCluster(cl)  # Shut down parallel cluster
+registerDoSEQ()  # Reset to sequential processing
+```
+
+# Print the best set of hyperparameters selected
+
+```{r}
+ print(xgb_model$bestTune)
+```
+
+
+
+
+## Predict the holdout set using the Random Forest model
+
+ We create a data frame called `holdout` that contains the actual target values from the holdout sample.  Add the class predictions and the positive-class probabilities from the Xgb model. Label these as `xgb.class`, `xgb.prob`. We make sure the table by Showing the first few lines of the data frame.
+
+```{r}
+holdout <- readRDS( "holdout_df_RF.rds") # Load the holdout data
+holdout$xgb.class<- predict(xgb_model, 
+                                 newdata = holdout,
+                                 type="raw")
+holdout$xgb.prob <- predict(xgb_model, 
+                                 newdata = holdout, 
+                                 type="prob")[,"Yes"]
+
+
+```
+
+# Create a confusion matrix for the Xgboost model
+
+```{r}
+confusionMatrix(holdout$xgb.class, 
+                holdout$loan_default, 
+                positive="Yes")
+```
+# Comment:
+
+This model detects 12476 false negatives and 2053 true positives with accuracy as 82% and Balanced accuracy as 56%.
+
+```{r}
+#saveRDS(holdout, "holdout_df_Boost.rds")
+saveRDS(xgb_model, "xgb_model.rds")
+```
+
+Next Stage:
+
+ We are approaching into comparing all the models with metrics which gives the best decision in making in loan default.
+

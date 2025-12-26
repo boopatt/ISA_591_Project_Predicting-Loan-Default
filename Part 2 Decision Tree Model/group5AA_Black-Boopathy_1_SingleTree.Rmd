@@ -1,0 +1,217 @@
+---
+title: Project 2.1
+subtitle: Customer Churn
+output:
+  html_document:
+    code_folding: show
+    df_print: paged
+    number_sections: yes
+    theme: readable
+    toc: yes
+    toc_float: yes
+    code_download: yes
+  word_document:
+    toc: no
+---
+```{r setup, include=FALSE,message=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE, message=FALSE,warning=FALSE)
+knitr::opts_chunk$set(fig.width=8, fig.height=6)
+
+if(require(pacman)==0)
+   {install.packages("pacman")}
+pacman::p_load(devtools,caret,cluster,dplyr,fastDummies,leaps,pacman,tidyverse,skimr,fastDummies,GGally,DataExplorer,ggrepel,ggthemes,dslabs,scatterplot3d,rpart,rpart.plot,randomForest,xgboost,ROCR)
+
+if (!require(mlba)) {
+  library(devtools)
+  install_github("gedeck/mlba/mlba", force=FALSE)
+}
+pacman::p_load(mlba,tidyverse)
+```
+
+# Read in the data
+
+The following dataset will be used to predict `Churned`.
+
+```{r}
+train=readRDS("group5AA_Black-Boopathy_train.rds")
+holdout=readRDS("holdout_df.rds")
+```
+
+
+# Fit Tree 1
+
+Fit a decision tree to the training data using the default settings.  Plot the tree.
+
+
+```{r}
+options(scipen=999)
+
+loan.ct1=rpart::rpart(loan_default ~ .,
+                        data=train,
+                        method="class")
+rpart.plot::rpart.plot(loan.ct1,
+                       extra=1, 
+                       fallen.leaves=FALSE)
+
+holdout$default.class <- predict(loan.ct1,
+                                      newdata=holdout,
+                                      type ="class"
+                                      )
+holdout$default.prob <- predict(loan.ct1,
+                                      newdata=holdout,
+                                      type ="prob"
+                                      )[,"Yes"] #probability of "Yes"
+
+confusionMatrix(holdout$default.class,
+                holdout$loan_default,positive="Yes"
+                
+    
+            )
+
+```
+
+# Fit Tree 2
+
+Fit a decision tree to the training data. Make sure you are using *Entropy* as the impurity measure.  Use `control=rpart.control(maxdepth=4,minbucket=10)`. Plot the tree.
+
+```{r}
+loan.ct2=rpart::rpart(loan_default ~ .,
+                        data=train,
+                        method="class",
+                                  parms=list(split="information"),
+                    control=rpart.control(maxdepth=4,minbucket=10))
+
+rpart.plot::rpart.plot(loan.ct2,
+                       extra=1, 
+                       fallen.leaves=FALSE)
+
+holdout$entropy.class <- predict(loan.ct2,
+                                      newdata=holdout,
+                                      type ="class"
+                                      )
+holdout$entropy.prob <- predict(loan.ct2,
+                                      newdata=holdout,
+                                      type ="prob"
+                                      )[,"Yes"] #probability of "Yes"
+
+# Create Confusion Matrix
+confusionMatrix(holdout$entropy.class,
+                holdout$loan_default,positive="Yes")
+                
+    
+```
+
+# Fit Tree 3
+
+## down sample
+
+Find the holdout predictions for each tree. Use the `type="class"` argument to get the predicted class.  Print the first few rows of the predictions.
+
+
+```{r}
+table(train$loan_default)
+```
+```{r}
+train.us = downSample(x = train %>% select(-loan_default),
+                      y = train$loan_default,
+                      yname = "loan_default")
+table(train.us$loan_default)
+```
+
+# Tree 3
+
+Use the oversampled training data to refit the model (default) used for Tree 1.  Plot the tree.
+
+```{r}
+loan.ct3=rpart::rpart(loan_default ~ .,
+                        data=train.us,
+                        method="class")
+rpart.plot::rpart.plot(loan.ct3,
+                       extra=1, 
+                       fallen.leaves=FALSE)
+
+holdout$ostree.class <- predict(loan.ct3, newdata = holdout, type = "class")
+
+holdout$ostree.prob <- predict(loan.ct3,
+                                      newdata=holdout,
+                                      type ="prob"
+                                      )[,"Yes"] #probability of "Yes"
+
+confusionMatrix(holdout$ostree.class,
+                holdout$loan_default,
+                positive="Yes"
+                )
+```
+
+
+# Tree 4
+
+Use the under sampled training data, and 5-fold cross validation to fit the a tree.
+
+## Step 1
+
+Use the rpart() function, adding the argument that controls for cross validation. Within the `rpart.control()` fucntion, set `cp=0  , `xval=5`, and `minbucket=`30` Print the `cp` results for each model size and a plot of the cross validation  Be sure to use set.seed(123).
+
+```{r}
+set.seed(123)
+loan.ct4=rpart( loan_default~ ., 
+                 data=train.us, 
+                 method="class",
+                 control=rpart.control(cp=0,  minbucket=30, xval=5)
+                )
+plotcp(loan.ct4)
+```
+
+## Step 2
+
+Find the `cp` with the minimum cross-validation error.  Print this value
+
+```{r}
+best_cp=loan.ct4$cptable[which.min(loan.ct4$cptable[,"xerror"]), "CP"] #pick the tree with the lowest cross validated error
+print(best_cp)
+```
+
+
+## Step 3
+
+Use the best `cp` value to prune the tree.  Plot the pruned tree.
+
+```{r}
+pruned_tree=prune(loan.ct4, cp=best_cp)
+rpart.plot(pruned_tree, extra=1, fallen.leaves=FALSE)
+```
+
+## Step 4
+
+Use the pruned tree to make predictions on the holdout data.  Print the first few rows of the predictions.
+
+```{r}
+
+
+holdout$pruned.class <- predict(pruned_tree,
+                                     newdata=holdout,
+                                     type ="class"
+                                     )
+
+holdout$pruned.prob <- predict(pruned_tree,
+                                      newdata=holdout,
+                                      type ="prob"
+                                      )[,"Yes"] #probability of "Yes"
+```
+
+## Step 5
+
+Create a confusion matrix for the pruned tree using the holdout data.  Print the confusion matrix.
+
+```{r}
+confusionMatrix(holdout$pruned.class,
+                holdout$loan_default,
+                positive="Yes"
+                )
+saveRDS(holdout, "holdout_df_Singletree.rds")
+
+```
+
+
+
